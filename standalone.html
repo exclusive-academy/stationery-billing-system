@@ -1,0 +1,1507 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SAKTHI VIJAY STATIONARIES — Billing</title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              babyPink: {
+                50: "#FFF1F7",
+                100: "#FEE5F1",
+                200: "#FBCFE8", // Primary per spec
+                300: "#F9A8D4",
+                600: "#DB2777",
+              },
+            },
+            boxShadow: {
+              soft: "0 10px 30px rgba(2,6,23,.08)",
+            },
+          },
+        },
+      };
+    </script>
+
+    <style>
+      /* Print: professional invoice on A4, plus thermal-friendly narrow */
+      @media print {
+        html,
+        body {
+          background: #fff !important;
+        }
+        .no-print {
+          display: none !important;
+        }
+        .print-only {
+          display: block !important;
+        }
+        .print-surface {
+          box-shadow: none !important;
+          border: none !important;
+          padding: 0 !important;
+          margin: 0 !important;
+        }
+        @page {
+          size: A4;
+          margin: 12mm;
+        }
+      }
+
+      /* Optional thermal print mode: add ?thermal=1 to URL then print */
+      @media print {
+        body[data-thermal="1"] {
+          page: thermal;
+        }
+        body[data-thermal="1"] .invoice-wrap {
+          max-width: 80mm !important;
+          margin: 0 auto !important;
+        }
+      }
+
+      @page thermal {
+        size: 80mm auto;
+        margin: 6mm;
+      }
+    </style>
+  </head>
+
+  <body class="min-h-screen bg-babyPink-50 text-slate-800">
+    <div id="root"></div>
+
+    <!-- React (UMD) + Babel (so double-click file:// works reliably) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useRef, useState } = React;
+
+      const LS_KEYS = {
+        products: "sakthi.products.v1",
+        shop: "sakthi.shop.v1",
+        invoices: "sakthi.invoices.v1",
+        invoiceCounter: "sakthi.invoiceCounter.v1",
+      };
+
+      const INR = (n) =>
+        new Intl.NumberFormat("en-IN", {
+          style: "currency",
+          currency: "INR",
+          maximumFractionDigits: 2,
+        })
+          .format(n || 0)
+          .replace("₹", "₹");
+
+      const DEFAULT_SHOP = {
+        name: "SAKTHI VIJAY STATIONARIES",
+        contact: "Phone: +91 00000 00000 • UPI: yourupi@bank",
+        address: "Your Address, City",
+      };
+
+      const DEFAULT_PRODUCTS = [
+        {
+          id: "pencil",
+          name: "Pencil",
+          wholesalePrice: 0,
+          retailPrice: 5,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+        {
+          id: "eraser",
+          name: "Eraser",
+          wholesalePrice: 0,
+          retailPrice: 4,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+        {
+          id: "scale",
+          name: "Scale",
+          wholesalePrice: 0,
+          retailPrice: 15,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+        {
+          id: "pen",
+          name: "Pen",
+          wholesalePrice: 0,
+          retailPrice: 10,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+        {
+          id: "notebook",
+          name: "Notebook",
+          wholesalePrice: 0,
+          retailPrice: 60,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+        {
+          id: "sharpener",
+          name: "Sharpener",
+          wholesalePrice: 0,
+          retailPrice: 8,
+          stockLeft: 0,
+          imageUrl: "",
+        },
+      ];
+
+      function safeJsonParse(s, fallback) {
+        try {
+          const v = JSON.parse(s);
+          return v ?? fallback;
+        } catch {
+          return fallback;
+        }
+      }
+
+      function normalizeProduct(raw) {
+        const r = raw && typeof raw === "object" ? raw : {};
+        const legacyRate = Math.max(0, Number(r.rate || 0) || 0);
+        const stockLeftRaw = r.stockLeft;
+        const stockLeft = Math.max(0, Number(stockLeftRaw ?? 0) || 0);
+        const wholesalePrice = Math.max(0, Number(r.wholesalePrice ?? 0) || 0);
+        const retailPrice = Math.max(0, Number(r.retailPrice ?? legacyRate) || 0);
+        return {
+          id: String(r.id || uid()),
+          name: String(r.name || "").trim() || "Unnamed",
+          wholesalePrice,
+          retailPrice,
+          stockLeft,
+          imageUrl: String(r.imageUrl || ""),
+        };
+      }
+
+      function loadProducts() {
+        const fromLs = safeJsonParse(localStorage.getItem(LS_KEYS.products), null);
+        if (Array.isArray(fromLs) && fromLs.length) return fromLs.map(normalizeProduct);
+        return DEFAULT_PRODUCTS;
+      }
+
+      function saveProducts(products) {
+        localStorage.setItem(LS_KEYS.products, JSON.stringify(products));
+      }
+
+      function loadShop() {
+        const fromLs = safeJsonParse(localStorage.getItem(LS_KEYS.shop), null);
+        if (fromLs && typeof fromLs === "object") return { ...DEFAULT_SHOP, ...fromLs };
+        return DEFAULT_SHOP;
+      }
+
+      function saveShop(shop) {
+        localStorage.setItem(LS_KEYS.shop, JSON.stringify(shop));
+      }
+
+      function loadInvoices() {
+        const fromLs = safeJsonParse(localStorage.getItem(LS_KEYS.invoices), []);
+        return Array.isArray(fromLs) ? fromLs : [];
+      }
+
+      function saveInvoices(invoices) {
+        localStorage.setItem(LS_KEYS.invoices, JSON.stringify(invoices));
+      }
+
+      function nextInvoiceNo() {
+        const raw = localStorage.getItem(LS_KEYS.invoiceCounter);
+        const n = Number(raw || 0) || 0;
+        const next = n + 1;
+        localStorage.setItem(LS_KEYS.invoiceCounter, String(next));
+        return next;
+      }
+
+      function uid() {
+        return (crypto?.randomUUID?.() || `id_${Math.random().toString(16).slice(2)}_${Date.now()}`);
+      }
+
+      function sumCart(cartById, products) {
+        let totalQty = 0;
+        let totalAmount = 0;
+        for (const p of products) {
+          const qty = Number(cartById[p.id] || 0) || 0;
+          if (qty > 0) {
+            totalQty += qty;
+            totalAmount += qty * (Number(p.retailPrice) || 0);
+          }
+        }
+        return { totalQty, totalAmount };
+      }
+
+      function App() {
+        const [tab, setTab] = useState("billing"); // billing | invoices | profit | settings
+        const [products, setProducts] = useState(loadProducts);
+        const [shop, setShop] = useState(loadShop);
+        const [invoices, setInvoices] = useState(loadInvoices);
+
+        const [cart, setCart] = useState(() => ({}));
+        const [customerName, setCustomerName] = useState("");
+        const [customerPhone, setCustomerPhone] = useState("");
+        const [activeInvoice, setActiveInvoice] = useState(null);
+
+        const totals = useMemo(() => sumCart(cart, products), [cart, products]);
+
+        const productsById = useMemo(() => {
+          const m = {};
+          for (const p of products) m[p.id] = p;
+          return m;
+        }, [products]);
+
+        useEffect(() => saveProducts(products), [products]);
+        useEffect(() => saveShop(shop), [shop]);
+        useEffect(() => saveInvoices(invoices), [invoices]);
+
+        useEffect(() => {
+          const u = new URL(location.href);
+          const thermal = u.searchParams.get("thermal") === "1";
+          document.body.dataset.thermal = thermal ? "1" : "0";
+        }, []);
+
+        const cartLines = useMemo(() => {
+          return products
+            .map((p) => {
+              const qty = Number(cart[p.id] || 0) || 0;
+              if (qty <= 0) return null;
+              return {
+                productId: p.id,
+                name: p.name,
+                wholesalePrice: Number(p.wholesalePrice) || 0,
+                retailPrice: Number(p.retailPrice) || 0,
+                qty,
+                amount: qty * (Number(p.retailPrice) || 0),
+              };
+            })
+            .filter(Boolean);
+        }, [cart, products]);
+
+        function setStockLeft(productId, next) {
+          const n = Math.max(0, Number(next ?? 0) || 0);
+          setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, stockLeft: n } : p)));
+          setCart((c) => {
+            const curQty = Number(c[productId] || 0) || 0;
+            const capped = Math.min(curQty, n);
+            return capped === curQty ? c : { ...c, [productId]: capped };
+          });
+        }
+
+        function setWholesalePrice(productId, next) {
+          const n = Math.max(0, Number(next ?? 0) || 0);
+          setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, wholesalePrice: n } : p)));
+        }
+
+        function adjustQty(productId, delta) {
+          setCart((c) => {
+            const cur = Number(c[productId] || 0) || 0;
+            const p = productsById[productId];
+            const max = Math.max(0, Number(p?.stockLeft ?? 0) || 0);
+            const next = Math.min(max, Math.max(0, cur + delta));
+            return { ...c, [productId]: next };
+          });
+        }
+
+        function setQty(productId, qty) {
+          const p = productsById[productId];
+          const max = Math.max(0, Number(p?.stockLeft ?? 0) || 0);
+          const q = Math.min(max, Math.max(0, Number(qty || 0) || 0));
+          setCart((c) => ({ ...c, [productId]: q }));
+        }
+
+        function clearCart() {
+          setCart({});
+        }
+
+        function generateInvoice() {
+          if (!cartLines.length) return;
+          const now = new Date();
+          const invNo = nextInvoiceNo();
+          const invoice = {
+            id: uid(),
+            invoiceNo: invNo,
+            createdAt: now.toISOString(),
+            shopSnapshot: shop,
+            customer: {
+              name: customerName.trim(),
+              phone: customerPhone.trim(),
+            },
+            lines: cartLines,
+            totals: {
+              totalQty: totals.totalQty,
+              totalAmount: totals.totalAmount,
+            },
+            upi: {
+              placeholder: true,
+            },
+          };
+          setInvoices((prev) => [invoice, ...prev]);
+          setActiveInvoice(invoice);
+          setTab("invoices");
+          setProducts((prev) => {
+            const soldById = {};
+            for (const l of cartLines) soldById[l.productId] = (soldById[l.productId] || 0) + (Number(l.qty) || 0);
+            return prev.map((p) => {
+              const sold = Number(soldById[p.id] || 0) || 0;
+              if (sold <= 0) return p;
+              const curLeft = Math.max(0, Number(p.stockLeft ?? 0) || 0);
+              return { ...p, stockLeft: Math.max(0, curLeft - sold) };
+            });
+          });
+          clearCart();
+        }
+
+        function removeInvoice(invoiceId) {
+          setInvoices((prev) => prev.filter((x) => x.id !== invoiceId));
+          if (activeInvoice?.id === invoiceId) setActiveInvoice(null);
+        }
+
+        const page = (
+          <div className="mx-auto w-full max-w-7xl px-4 py-5 pb-20 md:pb-5">
+            <Header shopName={shop.name} tab={tab} setTab={setTab} />
+
+            {tab === "billing" && (
+              <Billing
+                shop={shop}
+                products={products}
+                cart={cart}
+                adjustQty={adjustQty}
+                setQty={setQty}
+                setStockLeft={setStockLeft}
+                setWholesalePrice={setWholesalePrice}
+                totals={totals}
+                cartLines={cartLines}
+                clearCart={clearCart}
+                customerName={customerName}
+                setCustomerName={setCustomerName}
+                customerPhone={customerPhone}
+                setCustomerPhone={setCustomerPhone}
+                onGenerateInvoice={generateInvoice}
+              />
+            )}
+
+            {tab === "invoices" && (
+              <Invoices
+                invoices={invoices}
+                activeInvoice={activeInvoice}
+                setActiveInvoice={setActiveInvoice}
+                onDeleteInvoice={removeInvoice}
+              />
+            )}
+
+            {tab === "profit" && <Profit invoices={invoices} />}
+
+            {tab === "settings" && (
+              <Settings
+                shop={shop}
+                setShop={setShop}
+                products={products}
+                setProducts={setProducts}
+              />
+            )}
+
+            <div className="mt-10 text-center text-xs text-slate-500 no-print">
+              Data saved in your browser (LocalStorage). Currency: ₹ (INR).
+            </div>
+
+            <MobileNav tab={tab} setTab={setTab} />
+          </div>
+        );
+
+        return page;
+      }
+
+      function Header({ shopName, tab, setTab }) {
+        return (
+          <div className="no-print mb-5 flex flex-col gap-3 rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft md:flex-row md:items-center md:justify-between">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                Stationery Billing System
+              </div>
+              <div className="text-2xl font-extrabold tracking-tight text-slate-900">
+                {shopName || "SAKTHI VIJAY STATIONARIES"}
+              </div>
+            </div>
+            <div className="hidden flex-wrap gap-2 md:flex">
+              <TabBtn active={tab === "billing"} onClick={() => setTab("billing")}>Billing</TabBtn>
+              <TabBtn active={tab === "invoices"} onClick={() => setTab("invoices")}>Invoices</TabBtn>
+              <TabBtn active={tab === "profit"} onClick={() => setTab("profit")}>Profit</TabBtn>
+              <TabBtn active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabBtn>
+            </div>
+          </div>
+        );
+      }
+
+      function TabBtn({ active, onClick, children }) {
+        return (
+          <button
+            type="button"
+            onClick={onClick}
+            className={[
+              "rounded-xl px-4 py-2 text-sm font-semibold transition",
+              active
+                ? "bg-babyPink-200 text-slate-900 ring-2 ring-babyPink-300"
+                : "bg-babyPink-50 text-slate-700 hover:bg-babyPink-100",
+            ].join(" ")}
+          >
+            {children}
+          </button>
+        );
+      }
+
+      function Billing({
+        products,
+        cart,
+        adjustQty,
+        setQty,
+        setStockLeft,
+        setWholesalePrice,
+        totals,
+        cartLines,
+        clearCart,
+        customerName,
+        setCustomerName,
+        customerPhone,
+        setCustomerPhone,
+        onGenerateInvoice,
+      }) {
+        const [query, setQuery] = useState("");
+
+        const filteredProducts = useMemo(() => {
+          const q = query.trim().toLowerCase();
+          if (!q) return products;
+          return products.filter((p) => String(p.name || "").toLowerCase().includes(q));
+        }, [products, query]);
+
+        return (
+          <div className="grid gap-5 lg:grid-cols-12">
+            <div className="lg:col-span-8">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-bold text-slate-900">Products</div>
+                    <div className="text-xs text-slate-500">Tap + / − or enter a custom quantity.</div>
+                  </div>
+                  <div className="text-sm font-semibold text-slate-700">
+                    Total: <span className="text-slate-900">{INR(totals.totalAmount)}</span>
+                  </div>
+                </div>
+
+                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex-1">
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Search product… (e.g., pen)"
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 sm:justify-end">
+                    <div className="text-xs text-slate-500">
+                      Showing <span className="font-bold text-slate-800">{filteredProducts.length}</span> item(s)
+                    </div>
+                    {query.trim() ? (
+                      <button
+                        type="button"
+                        onClick={() => setQuery("")}
+                        className="rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-babyPink-50"
+                      >
+                        Clear
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {filteredProducts.length ? (
+                    filteredProducts.map((p) => (
+                      <ProductCard
+                        key={p.id}
+                        product={p}
+                        qty={Number(cart[p.id] || 0) || 0}
+                        onMinus={() => adjustQty(p.id, -1)}
+                        onPlus={() => adjustQty(p.id, +1)}
+                        onSetQty={(q) => setQty(p.id, q)}
+                        onSetStockLeft={(n) => setStockLeft(p.id, n)}
+                        onSetWholesalePrice={(n) => setWholesalePrice(p.id, n)}
+                      />
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-babyPink-200 bg-babyPink-50 p-3 text-sm text-slate-600">
+                      No products match your search.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-4">
+              <div className="sticky top-4 space-y-4">
+                <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                  <div className="mb-3 text-lg font-bold text-slate-900">Bill Summary</div>
+
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600">Customer Name</div>
+                        <input
+                          value={customerName}
+                          onChange={(e) => setCustomerName(e.target.value)}
+                          placeholder="Optional"
+                          className="mt-1 w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                        />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600">Customer Phone</div>
+                        <input
+                          value={customerPhone}
+                          onChange={(e) => setCustomerPhone(e.target.value)}
+                          placeholder="Optional"
+                          className="mt-1 w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-babyPink-100 bg-babyPink-50 p-3">
+                      {cartLines.length ? (
+                        <div className="space-y-2">
+                          {cartLines.map((l) => (
+                            <div key={l.productId} className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-sm font-semibold text-slate-900">{l.name}</div>
+                                <div className="text-xs text-slate-600">
+                                  {l.qty} × {INR(l.rate)}
+                                </div>
+                              </div>
+                              <div className="text-sm font-bold text-slate-900">{INR(l.amount)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-sm text-slate-600">No items yet. Add products to start billing.</div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-slate-700">Total Qty</div>
+                      <div className="text-sm font-bold text-slate-900">{totals.totalQty}</div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-slate-700">Grand Total</div>
+                      <div className="text-lg font-extrabold text-slate-900">{INR(totals.totalAmount)}</div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={clearCart}
+                        className="flex-1 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-babyPink-50"
+                      >
+                        Clear
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!cartLines.length}
+                        onClick={onGenerateInvoice}
+                        className="flex-1 rounded-xl bg-babyPink-200 px-3 py-2 text-sm font-extrabold text-slate-900 ring-2 ring-babyPink-300 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Generate Invoice
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft no-print">
+                  <div className="text-sm font-bold text-slate-900">Online Pay (UPI)</div>
+                  <div className="mt-2 flex items-center gap-3">
+                    <div className="h-20 w-20 rounded-xl border border-babyPink-200 bg-babyPink-50 p-2">
+                      <div className="grid h-full w-full place-items-center rounded-lg bg-white text-[10px] font-semibold text-slate-500">
+                        UPI QR
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-600">
+                      Placeholder QR code. In the full app, you can replace this with your real UPI QR image.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function ProductCard({ product, qty, onMinus, onPlus, onSetQty, onSetStockLeft, onSetWholesalePrice }) {
+        const stockLeft = Math.max(0, Number(product?.stockLeft ?? 0) || 0);
+        const atMax = qty >= stockLeft;
+        return (
+          <div className="rounded-2xl border border-babyPink-200 bg-babyPink-50 p-3">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-extrabold text-slate-900">{product.name}</div>
+                <div className="text-xs font-semibold text-slate-700">
+                  Retail: <span className="text-slate-900">{INR(product.retailPrice)}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-semibold text-slate-700">Wholesale</div>
+                  <input
+                    value={String(Math.max(0, Number(product?.wholesalePrice ?? 0) || 0))}
+                    onChange={(e) => onSetWholesalePrice(e.target.value)}
+                    inputMode="decimal"
+                    className="w-24 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                    aria-label="Wholesale Price"
+                    title="Wholesale Price"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-semibold text-slate-700">Left</div>
+                  <input
+                    value={String(stockLeft)}
+                    onChange={(e) => onSetStockLeft(e.target.value)}
+                    inputMode="numeric"
+                    className="w-20 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                    aria-label="Stock Left"
+                    title="Stock Left"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onMinus}
+                    className="h-10 w-10 rounded-xl border border-babyPink-200 bg-white text-base font-extrabold text-slate-900 hover:bg-babyPink-100"
+                    aria-label="Decrease quantity"
+                    title="Decrease"
+                  >
+                    −
+                  </button>
+                  <div className="min-w-14 text-center text-sm font-extrabold text-slate-900">
+                    {qty}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onPlus}
+                    disabled={atMax}
+                    className="h-10 w-10 rounded-xl bg-babyPink-200 text-base font-extrabold text-slate-900 ring-2 ring-babyPink-300 hover:bg-babyPink-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label="Increase quantity"
+                    title="Increase"
+                  >
+                    +
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="text-xs font-semibold text-slate-700">Custom Qty</div>
+                  <input
+                    value={qty}
+                    onChange={(e) => onSetQty(e.target.value)}
+                    inputMode="numeric"
+                    max={stockLeft}
+                    className="w-24 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                    aria-label="Custom Quantity"
+                    title="Custom Quantity"
+                  />
+                </div>
+
+                <div className="text-right text-xs text-slate-600">
+                  Subtotal:{" "}
+                  <span className="font-extrabold text-slate-900">
+                    {INR((Number(product.retailPrice) || 0) * qty)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Profit({ invoices }) {
+        const [filterMode, setFilterMode] = useState("month"); // month | year | range
+        const [month, setMonth] = useState(() => {
+          const d = new Date();
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        });
+        const [year, setYear] = useState(() => String(new Date().getFullYear()));
+        const [fromDate, setFromDate] = useState(() => {
+          const d = new Date();
+          d.setDate(d.getDate() - 30);
+          return d.toISOString().slice(0, 10);
+        });
+        const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+        const filtered = useMemo(() => {
+          if (!invoices.length) return [];
+          if (filterMode === "month") {
+            const [y, m] = month.split("-").map(Number);
+            return invoices.filter((inv) => {
+              const dt = new Date(inv.createdAt);
+              return dt.getFullYear() === y && dt.getMonth() + 1 === m;
+            });
+          }
+          if (filterMode === "year") {
+            const y = Number(year);
+            return invoices.filter((inv) => new Date(inv.createdAt).getFullYear() === y);
+          }
+          const from = new Date(fromDate + "T00:00:00");
+          const to = new Date(toDate + "T23:59:59");
+          return invoices.filter((inv) => {
+            const dt = new Date(inv.createdAt);
+            return dt >= from && dt <= to;
+          });
+        }, [invoices, filterMode, month, year, fromDate, toDate]);
+
+        const summary = useMemo(() => {
+          let totalQty = 0;
+          let revenue = 0;
+          let cost = 0;
+          let profit = 0;
+
+          const lines = [];
+          for (const inv of filtered) {
+            for (const l of inv.lines || []) {
+              const qty = Number(l.qty || 0) || 0;
+              const retail = Number(l.retailPrice ?? l.rate ?? 0) || 0;
+              const wholesale = Number(l.wholesalePrice ?? 0) || 0;
+              const lineRevenue = qty * retail;
+              const lineCost = qty * wholesale;
+              const lineProfit = qty * (retail - wholesale);
+              totalQty += qty;
+              revenue += lineRevenue;
+              cost += lineCost;
+              profit += lineProfit;
+              lines.push({
+                key: `${inv.id}_${l.productId}`,
+                name: l.name || "Item",
+                qty,
+                retail,
+                wholesale,
+                lineProfit,
+              });
+            }
+          }
+
+          return { totalQty, revenue, cost, profit, lines };
+        }, [filtered]);
+
+        return (
+          <div className="grid gap-5 lg:grid-cols-12">
+            <div className="lg:col-span-4 no-print">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="mb-3 text-lg font-bold text-slate-900">Profit</div>
+                <div className="mb-3 grid gap-2">
+                  <div className="flex gap-2">
+                    <FilterBtn active={filterMode === "month"} onClick={() => setFilterMode("month")}>
+                      Month
+                    </FilterBtn>
+                    <FilterBtn active={filterMode === "year"} onClick={() => setFilterMode("year")}>
+                      Year
+                    </FilterBtn>
+                    <FilterBtn active={filterMode === "range"} onClick={() => setFilterMode("range")}>
+                      Range
+                    </FilterBtn>
+                  </div>
+
+                  {filterMode === "month" && (
+                    <input
+                      type="month"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  )}
+                  {filterMode === "year" && (
+                    <input
+                      type="number"
+                      value={year}
+                      onChange={(e) => setYear(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      min="2000"
+                      max="2100"
+                    />
+                  )}
+                  {filterMode === "range" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={fromDate}
+                        onChange={(e) => setFromDate(e.target.value)}
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                      <input
+                        type="date"
+                        value={toDate}
+                        onChange={(e) => setToDate(e.target.value)}
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-700">Invoices</div>
+                    <div className="font-extrabold text-slate-900">{filtered.length}</div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-700">Total Qty</div>
+                    <div className="font-extrabold text-slate-900">{summary.totalQty}</div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-700">Revenue (Retail)</div>
+                    <div className="font-extrabold text-slate-900">{INR(summary.revenue)}</div>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-700">Cost (Wholesale)</div>
+                    <div className="font-extrabold text-slate-900">{INR(summary.cost)}</div>
+                  </div>
+                  <div className="mt-2 rounded-xl border border-babyPink-200 bg-babyPink-50 p-3">
+                    <div className="text-xs font-semibold text-slate-600">Total Profit</div>
+                    <div className="text-xl font-extrabold text-slate-900">{INR(summary.profit)}</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-8">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="mb-2 text-lg font-bold text-slate-900">Profit Details</div>
+                <div className="text-xs text-slate-500">
+                  Profit per line: <span className="font-bold text-slate-800">Retail price − Wholesale price = Profit</span> (× Qty)
+                </div>
+
+                <div className="mt-3 overflow-hidden rounded-xl border border-babyPink-200">
+                  <table className="w-full text-sm">
+                    <thead className="bg-babyPink-200">
+                      <tr className="text-left text-slate-900">
+                        <th className="px-3 py-2 font-extrabold">Item</th>
+                        <th className="px-3 py-2 font-extrabold">Qty</th>
+                        <th className="px-3 py-2 font-extrabold">Retail</th>
+                        <th className="px-3 py-2 font-extrabold">Wholesale</th>
+                        <th className="px-3 py-2 font-extrabold">Retail − Wholesale</th>
+                        <th className="px-3 py-2 text-right font-extrabold">Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white">
+                      {summary.lines.length ? (
+                        summary.lines.map((l) => (
+                          <tr key={l.key} className="border-t border-babyPink-100">
+                            <td className="px-3 py-2 font-semibold text-slate-900">{l.name}</td>
+                            <td className="px-3 py-2 text-slate-700">{l.qty}</td>
+                            <td className="px-3 py-2 text-slate-700">{INR(l.retail)}</td>
+                            <td className="px-3 py-2 text-slate-700">{INR(l.wholesale)}</td>
+                            <td className="px-3 py-2 text-slate-700">{INR(l.retail - l.wholesale)}</td>
+                            <td className="px-3 py-2 text-right font-bold text-slate-900">{INR(l.lineProfit)}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td className="px-3 py-6 text-center text-slate-600" colSpan="6">
+                            No sales in this filter.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Invoices({ invoices, activeInvoice, setActiveInvoice, onDeleteInvoice }) {
+        const [filterMode, setFilterMode] = useState("month"); // month | year | range
+        const [month, setMonth] = useState(() => {
+          const d = new Date();
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+        });
+        const [year, setYear] = useState(() => String(new Date().getFullYear()));
+        const [fromDate, setFromDate] = useState(() => {
+          const d = new Date();
+          d.setDate(d.getDate() - 30);
+          return d.toISOString().slice(0, 10);
+        });
+        const [toDate, setToDate] = useState(() => new Date().toISOString().slice(0, 10));
+
+        const filtered = useMemo(() => {
+          if (!invoices.length) return [];
+          if (filterMode === "month") {
+            const [y, m] = month.split("-").map(Number);
+            return invoices.filter((inv) => {
+              const dt = new Date(inv.createdAt);
+              return dt.getFullYear() === y && dt.getMonth() + 1 === m;
+            });
+          }
+          if (filterMode === "year") {
+            const y = Number(year);
+            return invoices.filter((inv) => new Date(inv.createdAt).getFullYear() === y);
+          }
+          const from = new Date(fromDate + "T00:00:00");
+          const to = new Date(toDate + "T23:59:59");
+          return invoices.filter((inv) => {
+            const dt = new Date(inv.createdAt);
+            return dt >= from && dt <= to;
+          });
+        }, [invoices, filterMode, month, year, fromDate, toDate]);
+
+        useEffect(() => {
+          if (!activeInvoice && filtered.length) setActiveInvoice(filtered[0]);
+          if (activeInvoice && !filtered.find((x) => x.id === activeInvoice.id)) {
+            setActiveInvoice(filtered[0] || null);
+          }
+        }, [filtered, activeInvoice, setActiveInvoice]);
+
+        return (
+          <div className="grid gap-5 lg:grid-cols-12">
+            <div className="lg:col-span-4 no-print">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="mb-3 text-lg font-bold text-slate-900">Invoice History</div>
+
+                <div className="mb-3 grid gap-2">
+                  <div className="flex gap-2">
+                    <FilterBtn active={filterMode === "month"} onClick={() => setFilterMode("month")}>
+                      Month
+                    </FilterBtn>
+                    <FilterBtn active={filterMode === "year"} onClick={() => setFilterMode("year")}>
+                      Year
+                    </FilterBtn>
+                    <FilterBtn active={filterMode === "range"} onClick={() => setFilterMode("range")}>
+                      Range
+                    </FilterBtn>
+                  </div>
+
+                  {filterMode === "month" && (
+                    <input
+                      type="month"
+                      value={month}
+                      onChange={(e) => setMonth(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  )}
+                  {filterMode === "year" && (
+                    <input
+                      type="number"
+                      value={year}
+                      onChange={(e) => setYear(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      min="2000"
+                      max="2100"
+                    />
+                  )}
+                  {filterMode === "range" && (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="date"
+                        value={fromDate}
+                        onChange={(e) => setFromDate(e.target.value)}
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                      <input
+                        type="date"
+                        value={toDate}
+                        onChange={(e) => setToDate(e.target.value)}
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-xs text-slate-500">
+                  Showing <span className="font-bold text-slate-800">{filtered.length}</span> invoice(s)
+                </div>
+
+                <div className="mt-3 max-h-[60vh] space-y-2 overflow-auto pr-1">
+                  {filtered.length ? (
+                    filtered.map((inv) => (
+                      <button
+                        key={inv.id}
+                        type="button"
+                        onClick={() => setActiveInvoice(inv)}
+                        className={[
+                          "w-full rounded-xl border px-3 py-3 text-left transition",
+                          activeInvoice?.id === inv.id
+                            ? "border-babyPink-300 bg-babyPink-50"
+                            : "border-babyPink-200 bg-white hover:bg-babyPink-50",
+                        ].join(" ")}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-extrabold text-slate-900">INV #{String(inv.invoiceNo).padStart(4, "0")}</div>
+                          <div className="text-xs font-semibold text-slate-600">{new Date(inv.createdAt).toLocaleString()}</div>
+                        </div>
+                        <div className="mt-1 text-xs text-slate-600">
+                          Qty: <span className="font-bold text-slate-900">{inv.totals.totalQty}</span> • Total:{" "}
+                          <span className="font-bold text-slate-900">{INR(inv.totals.totalAmount)}</span>
+                        </div>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-babyPink-200 bg-babyPink-50 p-3 text-sm text-slate-600">
+                      No invoices found for this filter.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-8">
+              {activeInvoice ? (
+                <InvoicePreview invoice={activeInvoice} onDelete={onDeleteInvoice} />
+              ) : (
+                <div className="rounded-2xl border border-babyPink-200 bg-white p-6 shadow-soft">
+                  <div className="text-lg font-bold text-slate-900">No invoice selected</div>
+                  <div className="mt-1 text-sm text-slate-600">
+                    Create a bill from the Billing page, then view/print it here.
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      function FilterBtn({ active, onClick, children }) {
+        return (
+          <button
+            type="button"
+            onClick={onClick}
+            className={[
+              "flex-1 rounded-xl px-3 py-2 text-sm font-semibold transition",
+              active ? "bg-babyPink-200 text-slate-900 ring-2 ring-babyPink-300" : "bg-babyPink-50 text-slate-700 hover:bg-babyPink-100",
+            ].join(" ")}
+          >
+            {children}
+          </button>
+        );
+      }
+
+      function InvoicePreview({ invoice, onDelete }) {
+        const shop = invoice.shopSnapshot || DEFAULT_SHOP;
+        const invNo = String(invoice.invoiceNo).padStart(4, "0");
+        const dt = new Date(invoice.createdAt);
+        const customer = invoice.customer || {};
+
+        const qrRef = useRef(null);
+        useEffect(() => {
+          // Placeholder QR: simple pattern canvas to look like a QR without dependencies
+          const el = qrRef.current;
+          if (!el) return;
+          const ctx = el.getContext("2d");
+          const size = el.width;
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, size, size);
+          ctx.fillStyle = "#111827";
+          const cell = 8;
+          for (let y = 0; y < size; y += cell) {
+            for (let x = 0; x < size; x += cell) {
+              const v = (x * 13 + y * 7 + invNo.length * 11) % 29;
+              if (v < 11) ctx.fillRect(x, y, cell, cell);
+            }
+          }
+          // finder-like squares
+          const drawFinder = (x0, y0) => {
+            ctx.fillStyle = "#111827";
+            ctx.fillRect(x0, y0, 48, 48);
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(x0 + 10, y0 + 10, 28, 28);
+            ctx.fillStyle = "#111827";
+            ctx.fillRect(x0 + 18, y0 + 18, 12, 12);
+          };
+          drawFinder(8, 8);
+          drawFinder(size - 56, 8);
+          drawFinder(8, size - 56);
+        }, [invNo]);
+
+        return (
+          <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft print-surface invoice-wrap">
+            <div className="no-print mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-lg font-bold text-slate-900">Invoice Preview</div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className="rounded-xl bg-babyPink-200 px-4 py-2 text-sm font-extrabold text-slate-900 ring-2 ring-babyPink-300 hover:bg-babyPink-100"
+                >
+                  Print
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDelete(invoice.id)}
+                  className="rounded-xl border border-babyPink-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-babyPink-50"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+
+            <div className="print-only hidden mb-2 text-xs text-slate-500">
+              Printed from Stationery Billing System
+            </div>
+
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-2xl font-extrabold tracking-tight text-slate-900">{shop.name}</div>
+                <div className="mt-1 text-sm text-slate-700">{shop.address}</div>
+                <div className="text-sm text-slate-700">{shop.contact}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm font-bold text-slate-900">INVOICE</div>
+                <div className="text-sm text-slate-700">
+                  <span className="font-semibold">No:</span> INV-{invNo}
+                </div>
+                <div className="text-sm text-slate-700">
+                  <span className="font-semibold">Date:</span> {dt.toLocaleString()}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-babyPink-200 bg-babyPink-50 p-3">
+              <div className="grid gap-2 md:grid-cols-2">
+                <div className="text-sm text-slate-700">
+                  <span className="font-semibold text-slate-900">Customer:</span>{" "}
+                  {customer.name ? customer.name : "—"}
+                </div>
+                <div className="text-sm text-slate-700 md:text-right">
+                  <span className="font-semibold text-slate-900">Phone:</span>{" "}
+                  {customer.phone ? customer.phone : "—"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-hidden rounded-xl border border-babyPink-200">
+              <table className="w-full text-sm">
+                <thead className="bg-babyPink-200">
+                  <tr className="text-left text-slate-900">
+                    <th className="px-3 py-2 font-extrabold">Item</th>
+                    <th className="px-3 py-2 font-extrabold">Rate</th>
+                    <th className="px-3 py-2 font-extrabold">Qty</th>
+                    <th className="px-3 py-2 text-right font-extrabold">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white">
+                  {invoice.lines.map((l) => (
+                    <tr key={l.productId} className="border-t border-babyPink-100">
+                      <td className="px-3 py-2 font-semibold text-slate-900">{l.name}</td>
+                      <td className="px-3 py-2 text-slate-700">{INR(l.retailPrice ?? l.rate)}</td>
+                      <td className="px-3 py-2 text-slate-700">{l.qty}</td>
+                      <td className="px-3 py-2 text-right font-bold text-slate-900">{INR(l.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <div className="rounded-xl border border-babyPink-200 bg-white p-3">
+                <div className="text-sm font-bold text-slate-900">Online Pay (UPI)</div>
+                <div className="mt-2 flex items-center gap-3">
+                  <div className="rounded-xl border border-babyPink-200 bg-white p-2">
+                    <canvas ref={qrRef} width="120" height="120" aria-label="UPI QR placeholder"></canvas>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    Placeholder UPI QR. Replace with your real UPI QR image later.
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-babyPink-200 bg-white p-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-semibold text-slate-700">Total Qty</span>
+                  <span className="font-extrabold text-slate-900">{invoice.totals.totalQty}</span>
+                </div>
+                <div className="mt-2 flex items-center justify-between text-base">
+                  <span className="font-semibold text-slate-700">Grand Total</span>
+                  <span className="text-xl font-extrabold text-slate-900">{INR(invoice.totals.totalAmount)}</span>
+                </div>
+                <div className="mt-3 border-t border-babyPink-100 pt-3 text-xs text-slate-500">
+                  Thank you for your purchase.
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Settings({ shop, setShop, products, setProducts }) {
+        const [name, setName] = useState(shop.name || "");
+        const [contact, setContact] = useState(shop.contact || "");
+        const [address, setAddress] = useState(shop.address || "");
+
+        const [newName, setNewName] = useState("");
+        const [newWholesalePrice, setNewWholesalePrice] = useState("");
+        const [newRetailPrice, setNewRetailPrice] = useState("");
+        const [newStockLeft, setNewStockLeft] = useState("");
+        const [newImageUrl, setNewImageUrl] = useState("");
+
+        useEffect(() => {
+          setName(shop.name || "");
+          setContact(shop.contact || "");
+          setAddress(shop.address || "");
+        }, [shop]);
+
+        function saveShopSettings() {
+          setShop({
+            ...shop,
+            name: name.trim() || DEFAULT_SHOP.name,
+            contact: contact.trim() || DEFAULT_SHOP.contact,
+            address: address.trim() || DEFAULT_SHOP.address,
+          });
+        }
+
+        function updateWholesalePrice(productId, wholesalePrice) {
+          const n = Math.max(0, Number(wholesalePrice || 0) || 0);
+          setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, wholesalePrice: n } : p)));
+        }
+
+        function updateRetailPrice(productId, retailPrice) {
+          const n = Math.max(0, Number(retailPrice || 0) || 0);
+          setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, retailPrice: n } : p)));
+        }
+
+        function updateStockLeft(productId, stockLeft) {
+          const n = Math.max(0, Number(stockLeft || 0) || 0);
+          setProducts((prev) => prev.map((p) => (p.id === productId ? { ...p, stockLeft: n } : p)));
+        }
+
+        function removeProduct(productId) {
+          setProducts((prev) => prev.filter((p) => p.id !== productId));
+        }
+
+        function addProduct() {
+          const nm = newName.trim();
+          if (!nm) return;
+          const wholesalePrice = Math.max(0, Number(newWholesalePrice || 0) || 0);
+          const retailPrice = Math.max(0, Number(newRetailPrice || 0) || 0);
+          const stockLeft = Math.max(0, Number(newStockLeft || 0) || 0);
+          const p = {
+            id: uid(),
+            name: nm,
+            wholesalePrice,
+            retailPrice,
+            stockLeft,
+            imageUrl: "",
+          };
+          setProducts((prev) => [p, ...prev]);
+          setNewName("");
+          setNewWholesalePrice("");
+          setNewRetailPrice("");
+          setNewStockLeft("");
+          setNewImageUrl("");
+        }
+
+        function resetToDefault() {
+          if (!confirm("Reset products and shop info to defaults?")) return;
+          localStorage.removeItem(LS_KEYS.products);
+          localStorage.removeItem(LS_KEYS.shop);
+          setProducts(DEFAULT_PRODUCTS);
+          setShop(DEFAULT_SHOP);
+        }
+
+        return (
+          <div className="grid gap-5 lg:grid-cols-12">
+            <div className="lg:col-span-5">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="text-lg font-bold text-slate-900">Shop Settings</div>
+                <div className="mt-3 space-y-3">
+                  <Field label="Shop Name">
+                    <input
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </Field>
+                  <Field label="Contact Info">
+                    <input
+                      value={contact}
+                      onChange={(e) => setContact(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </Field>
+                  <Field label="Address">
+                    <input
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </Field>
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={saveShopSettings}
+                      className="flex-1 rounded-xl bg-babyPink-200 px-4 py-2 text-sm font-extrabold text-slate-900 ring-2 ring-babyPink-300 hover:bg-babyPink-100"
+                    >
+                      Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetToDefault}
+                      className="flex-1 rounded-xl border border-babyPink-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-babyPink-50"
+                    >
+                      Reset Defaults
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="text-lg font-bold text-slate-900">Add Product</div>
+                <div className="mt-3 grid gap-3">
+                  <Field label="Name">
+                    <input
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                      placeholder="e.g., Marker"
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </Field>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="Wholesale (₹)">
+                      <input
+                        value={newWholesalePrice}
+                        onChange={(e) => setNewWholesalePrice(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g., 20"
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                    </Field>
+                    <Field label="Retail (₹)">
+                      <input
+                        value={newRetailPrice}
+                        onChange={(e) => setNewRetailPrice(e.target.value)}
+                        inputMode="decimal"
+                        placeholder="e.g., 25"
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Stock Left">
+                    <input
+                      value={newStockLeft}
+                      onChange={(e) => setNewStockLeft(e.target.value)}
+                      inputMode="numeric"
+                      placeholder="e.g., 100"
+                      className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                    />
+                  </Field>
+                  <Field label="Image URL (not used)">
+                      <input
+                        value={newImageUrl}
+                        onChange={(e) => setNewImageUrl(e.target.value)}
+                        placeholder="(kept for future)"
+                        className="w-full rounded-xl border border-babyPink-200 bg-babyPink-50 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-babyPink-300"
+                      />
+                  </Field>
+                  <button
+                    type="button"
+                    onClick={addProduct}
+                    className="rounded-xl bg-babyPink-200 px-4 py-2 text-sm font-extrabold text-slate-900 ring-2 ring-babyPink-300 hover:bg-babyPink-100"
+                  >
+                    Add Product
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="lg:col-span-7">
+              <div className="rounded-2xl border border-babyPink-200 bg-white p-4 shadow-soft">
+                <div className="mb-3 text-lg font-bold text-slate-900">Manage Products</div>
+                <div className="space-y-3">
+                  {products.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex flex-col gap-3 rounded-2xl border border-babyPink-200 bg-babyPink-50 p-3 md:flex-row md:items-center md:justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div>
+                          <div className="text-sm font-extrabold text-slate-900">{p.name}</div>
+                          <div className="text-xs text-slate-600">
+                            Retail: {INR(p.retailPrice)} • Wholesale: {INR(p.wholesalePrice)} • Left:{" "}
+                            <span className="font-bold text-slate-800">{Math.max(0, Number(p.stockLeft ?? 0) || 0)}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs font-semibold text-slate-700">Wholesale (₹)</div>
+                          <input
+                            value={String(Math.max(0, Number(p.wholesalePrice ?? 0) || 0))}
+                            onChange={(e) => updateWholesalePrice(p.id, e.target.value)}
+                            inputMode="decimal"
+                            className="w-28 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs font-semibold text-slate-700">Retail (₹)</div>
+                          <input
+                            value={String(Math.max(0, Number(p.retailPrice ?? 0) || 0))}
+                            onChange={(e) => updateRetailPrice(p.id, e.target.value)}
+                            inputMode="decimal"
+                            className="w-28 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="text-xs font-semibold text-slate-700">Left</div>
+                          <input
+                            value={String(Math.max(0, Number(p.stockLeft ?? 0) || 0))}
+                            onChange={(e) => updateStockLeft(p.id, e.target.value)}
+                            inputMode="numeric"
+                            className="w-24 rounded-xl border border-babyPink-200 bg-white px-3 py-2 text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-babyPink-300"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeProduct(p.id)}
+                          className="rounded-xl border border-babyPink-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-babyPink-100"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {!products.length && (
+                    <div className="rounded-xl border border-babyPink-200 bg-babyPink-50 p-3 text-sm text-slate-600">
+                      No products. Add a product to begin.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function Field({ label, children }) {
+        return (
+          <label className="block">
+            <div className="text-xs font-semibold text-slate-600">{label}</div>
+            <div className="mt-1">{children}</div>
+          </label>
+        );
+      }
+
+      function MobileNav({ tab, setTab }) {
+        return (
+          <div className="no-print fixed bottom-0 left-0 right-0 z-50 border-t border-babyPink-200 bg-white/95 backdrop-blur md:hidden">
+            <div className="mx-auto grid max-w-7xl grid-cols-4 gap-2 px-4 py-2">
+              <TabBtn active={tab === "billing"} onClick={() => setTab("billing")}>Billing</TabBtn>
+              <TabBtn active={tab === "invoices"} onClick={() => setTab("invoices")}>Invoices</TabBtn>
+              <TabBtn active={tab === "profit"} onClick={() => setTab("profit")}>Profit</TabBtn>
+              <TabBtn active={tab === "settings"} onClick={() => setTab("settings")}>Settings</TabBtn>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
+
